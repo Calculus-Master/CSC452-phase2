@@ -90,3 +90,8 @@ void wakeupByDevice(int type, int unit, int status)
 {
     check_kernel_mode(__func__ );
 }
+
+void phase2_start_service_processes(void)
+{
+
+}
