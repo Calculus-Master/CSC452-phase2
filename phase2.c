@@ -4,9 +4,32 @@
 #include <string.h>
 #include <stdlib.h>
 
+// Data Structures
+
+typedef struct MailBox {
+
+} MailBox;
+
+typedef struct MailSlot {
+    char message[MAX_MESSAGE];
+} MailSlot;
+
+typedef struct ShadowProcess {
+    int pid;
+} ShadowProcess;
+
+static MailBox mailboxes[MAXMBOX];
+static MailSlot mailslots[MAXSLOTS];
+static ShadowProcess shadow_table[MAXPROC];
+
+// Phase 2 Functions
+
 void phase2_init(void)
 {
-
+    // Clear out all mailboxes, slots, and shadow process table
+    memset(mailboxes, 0, sizeof(mailboxes));
+    memset(mailslots, 0, sizeof(mailslots));
+    memset(shadow_table, 0, sizeof(shadow_table));
 }
 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
