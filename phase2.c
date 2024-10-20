@@ -274,21 +274,38 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         slot = slot->queue_next;
     }
 
-    // If no deliverable slot found, block
+    // If no deliverable slot found, add the current process to the consumer queue and block
     if(slot == NULL)
+    {
+        ShadowProcess* current = &shadow_table[getpid() % MAXPROC];
+        if(mailbox->consumer_queue == NULL)
+            mailbox->consumer_queue = current;
+        else
+        {
+            ShadowProcess* last = mailbox->consumer_queue;
+            while(last->consumer_queue_next != NULL)
+                last = last->consumer_queue_next;
+            last->consumer_queue_next = current;
+        }
+
         blockMe();
-
-    if(slot->message_size > msg_max_size)
-        return -1; // Message too large for buffer  TODO: Unsure what to do with the message in this case
-
-    // Copy message into buffer
-    memcpy(msg_ptr, slot->message, slot->message_size);
+    }
 
     // Remove slot from mailbox
     if(prev == NULL)
         mailbox->slot_queue = slot->queue_next;
     else
         prev->queue_next = slot->queue_next;
+
+    // Message too large for buffer
+    if(slot->message_size > msg_max_size)
+    {
+        memset(slot, 0, sizeof(MailSlot));
+        return -1;
+    }
+
+    // Copy message into buffer
+    memcpy(msg_ptr, slot->message, slot->message_size);
 
     // Free slot
     int return_size = slot->message_size;
