@@ -1,0 +1,13 @@
+phase3_start_service_processes() called -- currently a NOP
+phase4_start_service_processes() called -- currently a NOP
+phase5_start_service_processes() called -- currently a NOP
+start2(): started
+start2(): MboxCreate returned id = 7
+start2(): Attempting to receive message from mailbox 7, but it is blocked
+          because the slots are empty.
+          Later, it should fail due to the buffer size being too small.
+
+XXp1(): started
+XXp1(): arg = '(null)'
+SIMULATOR TRAP: USLOSS_IntVec[USLOSS_CLOCK_INT] is NULL!
+

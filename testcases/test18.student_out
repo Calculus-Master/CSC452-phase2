@@ -1,0 +1,7 @@
+phase3_start_service_processes() called -- currently a NOP
+phase4_start_service_processes() called -- currently a NOP
+phase5_start_service_processes() called -- currently a NOP
+start2(): started, trying to exceed systemwide mailslots...
+UNEXPECTED ERROR 1: mailbox 0 and slot 0
+ERROR: testcase_main() returned nonzero: status=100
+finish(): The simulation is now terminating.

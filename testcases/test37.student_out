@@ -1,0 +1,8 @@
+phase3_start_service_processes() called -- currently a NOP
+phase4_start_service_processes() called -- currently a NOP
+phase5_start_service_processes() called -- currently a NOP
+start2(): started, creating with size of slot too big
+start2(): MailBoxCreate returned id = 7
+start2(): failed...
+ERROR: testcase_main() returned nonzero: status=1
+finish(): The simulation is now terminating.
