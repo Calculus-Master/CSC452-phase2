@@ -64,14 +64,14 @@ int MboxCreate(int slots, int slot_size)
         return -1; // Negative slots or slot_size
 
     // Find next available mailbox
-    int init_mbox_id = next_mbox_id % MAXMBOX;
-    MailBox* mbox = &mailboxes[next_mbox_id];
+    int init_mbox_id = next_mbox_id++ % MAXMBOX;
+    MailBox* mbox = &mailboxes[init_mbox_id];
     while(mbox->in_use)
     {
-        if(next_mbox_id++ % MAXMBOX == init_mbox_id)
+        if(next_mbox_id % MAXMBOX == init_mbox_id)
             return -1; // No free mailboxes
 
-        mbox = &mailboxes[next_mbox_id];
+        mbox = &mailboxes[next_mbox_id++ % MAXMBOX];
     }
 
     // Reset mailbox in case there's left over data
