@@ -224,26 +224,23 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
     // If no consumers, block
     if(mailbox->consumer_queue == NULL)
         blockMe();
-    // Otherwise, wake up a consumer and deliver
+
+    // Wake up a consumer and mark a slot for delivery (if it blocks in the previous step, should CS to this line)
     // TODO: PROBABLY BUGGY
-    else
-    {
-        // Remove first consumer from queue
-        ShadowProcess* consumer = mailbox->consumer_queue;
-        mailbox->consumer_queue = consumer->consumer_queue_next;
+    // Remove first consumer from queue
+    ShadowProcess* consumer = mailbox->consumer_queue;
+    mailbox->consumer_queue = consumer->consumer_queue_next;
 
-        // Set the first unclaimed slot in the queue to be claimed by the first consumer
-        // Does not remove the slot from the queue, that is done in MboxRecv()
-        // Hopefully avoids the race condition
-        MailSlot* deliver_slot = mailbox->slot_queue;
-        while(deliver_slot->claimed_by_pid)
-            deliver_slot = deliver_slot->queue_next;
-        deliver_slot->claimed_by_pid = consumer->pid;
+    // Set the first unclaimed slot in the queue to be claimed by the first consumer
+    // Does not remove the slot from the queue, that is done in MboxRecv()
+    // Hopefully avoids the race condition
+    MailSlot* deliver_slot = mailbox->slot_queue;
+    while(deliver_slot->claimed_by_pid)
+        deliver_slot = deliver_slot->queue_next;
+    deliver_slot->claimed_by_pid = consumer->pid;
 
-        // Unblock consumer, it will eventually grab this message
-        unblockProc(consumer->pid);
-    }
-
+    // Unblock consumer, it will eventually grab this message
+    unblockProc(consumer->pid);
     return 0;
 }
 
@@ -251,6 +248,62 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 {
     check_kernel_mode(__func__ );
+
+    if(!is_valid_mailbox_id(mbox_id))
+        return -1; // Invalid mailbox id
+
+    MailBox* mailbox = &mailboxes[mbox_id];
+
+    if(mailbox->flagged_for_removal)
+        return -1; // Mailbox is flagged for removal
+
+    if(mailbox->slot_queue == NULL)
+        blockMe(); // No messages ready to receive, so block
+
+    // Search for a claimed slot, or the first unclaimed slot
+    MailSlot* prev = NULL;
+    MailSlot* slot = mailbox->slot_queue;
+    while(slot != NULL)
+    {
+        // Deliverable slot found if claimed by current process or unclaimed by any
+        // Break out of loop if so to actually deliver the message
+        if(slot->claimed_by_pid == getpid() || !slot->claimed_by_pid)
+            break;
+
+        prev = slot;
+        slot = slot->queue_next;
+    }
+
+    // If no deliverable slot found, block
+    if(slot == NULL)
+        blockMe();
+
+    if(slot->message_size > msg_max_size)
+        return -1; // Message too large for buffer  TODO: Unsure what to do with the message in this case
+
+    // Copy message into buffer
+    memcpy(msg_ptr, slot->message, slot->message_size);
+
+    // Remove slot from mailbox
+    if(prev == NULL)
+        mailbox->slot_queue = slot->queue_next;
+    else
+        prev->queue_next = slot->queue_next;
+
+    // Free slot
+    int return_size = slot->message_size;
+    memset(slot, 0, sizeof(MailSlot));
+    slot->mailbox_id = -1;
+
+    // Unblock a producer, if any, are waiting
+    if(mailbox->producer_queue != NULL)
+    {
+        ShadowProcess* producer = mailbox->producer_queue;
+        mailbox->producer_queue = producer->producer_queue_next;
+        unblockProc(producer->pid);
+    }
+
+    return return_size;
 }
 
 // returns 0 if successful, 1 if mailbox full, -1 if illegal args
@@ -271,6 +324,7 @@ void waitDevice(int type, int unit, int *status)
 {
     check_kernel_mode(__func__ );
 }
+
 void wakeupByDevice(int type, int unit, int status)
 {
     check_kernel_mode(__func__ );
