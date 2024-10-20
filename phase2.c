@@ -42,7 +42,12 @@ static MailBox mailboxes[MAXMBOX];
 static MailSlot mailslots[MAXSLOTS];
 static ShadowProcess shadow_table[MAXPROC];
 
-next_mbox_id = 0;
+static int last_clock_time = 0;
+static int clock_mbox;
+static int disk_mboxes[2];
+static int terminal_mboxes[4];
+
+int next_mbox_id = 0;
 
 // Helper Functions
 void check_kernel_mode(const char *function_name)
@@ -72,6 +77,58 @@ int get_next_free_mailbox_slot()
 
 // Phase 2 Functions
 
+static void clock_interrupt_handler(int type, void *payload)
+{
+    int current_time = currentTime() / 1000; // Call to get the current clock time in ms.
+    // USLOSS_Console("Clock interrupt at time %d\n", current_time);
+
+    if (current_time - last_clock_time >= 100)
+    {
+        // USLOSS_Console("SENDING MESSAGE at time %d\n", current_time);
+        // int res =
+        MboxCondSend(clock_mbox, &current_time, sizeof(int)); // Send current time.
+        // USLOSS_Console("MboxCondSend returned %d\n", res);
+        last_clock_time = current_time;
+    }
+    dispatcher(); // Dispatcher call required.
+}
+
+void disk_interrupt_handler(int type, void *payload)
+{
+    int unit = (int)(long)payload; // Extract unit number from payload.
+    int status;
+
+    status = USLOSS_DeviceInput(USLOSS_DISK_DEV, unit, &status); // Get current status of the disk.
+
+    MboxCondSend(disk_mboxes[unit], &status, sizeof(int)); // Send status to the corresponding disk mailbox.
+
+    dispatcher();
+}
+
+void terminal_interrupt_handler(int type, void *payload)
+{
+    int unit = (int)(long)payload; // Extract unit number from payload.
+    int status;
+
+    status = USLOSS_DeviceInput(USLOSS_TERM_DEV, unit, &status); // Get current status of the disk.
+
+    MboxCondSend(terminal_mboxes[unit], &status, sizeof(int)); // Send status to the corresponding disk mailbox.
+
+    dispatcher();
+}
+
+// void syscall_interrupt_handler(int type, void *payload)
+// {
+//     USLOSS_Sysargs *args = (USLOSS_Sysargs *)payload;
+//     systemCallVec[args->number](args);
+// }
+
+void nullsys()
+{
+    USLOSS_Console("nullsys(): error\n");
+    USLOSS_Halt(1);
+}
+
 void phase2_init(void)
 {
     // Clear out all mailboxes, slots, and shadow process table
@@ -84,14 +141,26 @@ void phase2_init(void)
         mailslots[i].mailbox_id = -1;
 
     // Create device mailboxes
-    // TODO idk how these get used, but they probably need to be stored somewhere
-    int clock1_mbox = MboxCreate(1, sizeof(int));
-    int disk1_mbox = MboxCreate(1, sizeof(int));
-    int disk2_mbox = MboxCreate(1, sizeof(int));
-    int term1_mbox = MboxCreate(1, sizeof(int));
-    int term2_mbox = MboxCreate(1, sizeof(int));
-    int term3_mbox = MboxCreate(1, sizeof(int));
-    int term4_mbox = MboxCreate(1, sizeof(int));
+    clock_mbox = MboxCreate(1, sizeof(int));
+
+    for (int i = 0; i < 2; i++)
+        disk_mboxes[i] = MboxCreate(1, sizeof(int));
+
+    for (int i = 0; i < 4; i++)
+        terminal_mboxes[i] = MboxCreate(1, sizeof(int));
+
+    USLOSS_IntVec[USLOSS_CLOCK_INT] = clock_interrupt_handler;
+    USLOSS_IntVec[USLOSS_DISK_INT] = disk_interrupt_handler;
+    USLOSS_IntVec[USLOSS_TERM_INT] = terminal_interrupt_handler;
+    // USLOSS_IntVec[USLOSS_SYSCALL_INT] = syscall_interrupt_handler;
+
+    // define systemcallvec
+    void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
+
+    for (int i = 0; i < MAXSYSCALLS; i++)
+    {
+        systemCallVec[i] = nullsys;
+    }
 }
 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
