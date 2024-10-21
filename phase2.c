@@ -412,11 +412,60 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 void waitDevice(int type, int unit, int *status)
 {
     check_kernel_mode(__func__);
+
+    // Validate type and unit arguments
+    if ((type != USLOSS_CLOCK_DEV && type != USLOSS_DISK_DEV && type != USLOSS_TERM_DEV) ||
+        (type == USLOSS_CLOCK_DEV && unit != 0) ||
+        (type == USLOSS_DISK_DEV && (unit < 0 || unit > 1)) ||
+        (type == USLOSS_TERM_DEV && (unit < 0 || unit > 3)))
+    {
+        USLOSS_Console("Error: Invalid device type or unit.\n");
+        USLOSS_Halt(1); // Halt the simulation on error
+    }
+
+    int mailboxID = getDeviceMailbox(type, unit); // Retrieve the corresponding mailbox
+    int message;
+
+    // Block and wait for the interrupt to send a message to the mailbox
+    if (MboxRecv(mailboxID, &message, sizeof(int)) < 0)
+    {
+        USLOSS_Console("Error: MboxRecv failed in waitDevice.\n");
+        USLOSS_Halt(1);
+    }
+
+    // Store the received device status in the out parameter
+    *status = message;
 }
 
 void wakeupByDevice(int type, int unit, int status)
 {
     check_kernel_mode(__func__);
+
+    // Validate type and unit arguments (similar to waitDevice)
+    if ((type != USLOSS_CLOCK_DEV && type != USLOSS_DISK_DEV && type != USLOSS_TERM_DEV) ||
+        (type == USLOSS_CLOCK_DEV && unit != 0) ||
+        (type == USLOSS_DISK_DEV && (unit < 0 || unit > 1)) ||
+        (type == USLOSS_TERM_DEV && (unit < 0 || unit > 3)))
+    {
+        USLOSS_Console("Error: Invalid device type or unit in wakeupByDevice.\n");
+        return; // Just return; it's not necessary to halt in this case.
+    }
+
+    int mailboxID = getDeviceMailbox(type, unit); // Retrieve the corresponding mailbox
+
+    // Attempt to send the status to the mailbox without blocking
+    int result = MboxCondSend(mailboxID, &status, sizeof(int));
+
+    if (result == -2)
+    {
+        // This indicates that the mailbox is full, but we won't block or halt the system
+        USLOSS_Console("Warning: MboxCondSend failed due to full mailbox in wakeupByDevice.\n");
+    }
+    else if (result < 0)
+    {
+        USLOSS_Console("Error: MboxCondSend failed in wakeupByDevice.\n");
+        USLOSS_Halt(1);
+    }
 }
 
 void phase2_start_service_processes(void)

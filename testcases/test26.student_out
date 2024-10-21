@@ -6,5 +6,3 @@ start2(): MboxCreate returned id = 7
 
 XXp3(): started, about to send 5 messages to the mailbox
 XXp3(): sending message #1 to mailbox 7
-SIMULATOR TRAP: USLOSS_IntVec[USLOSS_CLOCK_INT] is NULL!
-
