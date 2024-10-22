@@ -165,6 +165,32 @@ void deliver_first_message(MailBox* mailbox)
     unblockProc(consumer->pid);
 }
 
+ShadowProcess* add_shadow_process(int pid)
+{
+    ShadowProcess* process = &shadow_table[pid % MAXPROC];
+    process->pid = pid;
+    return process;
+}
+
+// Adds the given process to the mailbox's consumer queue
+void enqueue_consumer(MailBox* mailbox, ShadowProcess* process)
+{
+
+}
+
+// Adds the given process to the mailbox's producer queue
+void enqueue_producer(MailBox* mailbox, ShadowProcess* process)
+{
+    if (mailbox->producer_queue == NULL)
+        mailbox->producer_queue = process;
+    else
+    {
+        ShadowProcess *last_process = mailbox->producer_queue;
+        while (last_process->producer_queue_next != NULL)
+            last_process = last_process->producer_queue_next;
+        last_process->producer_queue_next = process;
+    }
+}
 
 // Phase 2 Spec Functions
 
@@ -276,6 +302,7 @@ int MboxRelease(int mbox_id)
     ShadowProcess *producer = mailbox->producer_queue;
     while (producer != NULL)
     {
+        printf("Unblocking producer %d\n", producer->pid);
         unblockProc(producer->pid);
         producer = producer->producer_queue_next;
     }
@@ -303,22 +330,17 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
         return -1;                                      // Mailbox is flagged for removal
     else if (mailbox->used_slots == mailbox->max_slots) // Mailbox is full, add process to producer queue
     {
-        ShadowProcess *process = &shadow_table[getpid() % MAXPROC];
-        process->pid = getpid();
+        // Setup shadow process
+        ShadowProcess* process = add_shadow_process(getpid());
 
         // Add process to producer queue
-        if (mailbox->producer_queue == NULL)
-            mailbox->producer_queue = process;
-        else
-        {
-            ShadowProcess *last_process = mailbox->producer_queue;
-            while (last_process->producer_queue_next != NULL)
-                last_process = last_process->producer_queue_next;
-            last_process->producer_queue_next = process;
-        }
+        enqueue_producer(mailbox, process);
 
         // Block (when the mailbox has space it'll unblock)
         blockMe();
+
+        // Check if the mailbox got released while blocked, don't need to check anything else from above
+        if(mailbox->flagged_for_removal) return -1;
     }
 
     int slot_index = get_next_free_mailbox_slot();
@@ -383,19 +405,13 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     // If no deliverable slot found, add the current process to the consumer queue and block
     if (slot == NULL)
     {
-        ShadowProcess* current = &shadow_table[getpid() % MAXPROC];
-        current->pid = getpid();
+        // Setup shadow process
+        ShadowProcess* current = add_shadow_process(getpid());
 
-        if (mailbox->consumer_queue == NULL)
-            mailbox->consumer_queue = current;
-        else
-        {
-            ShadowProcess *last = mailbox->consumer_queue;
-            while (last->consumer_queue_next != NULL)
-                last = last->consumer_queue_next;
-            last->consumer_queue_next = current;
-        }
+        // Add process to consumer queue
+        enqueue_consumer(mailbox, current);
 
+        // Block (when a message is available it'll unblock)
         blockMe();
 
         // After returning from CS, grab the slot again (should be guaranteed to exist now)
@@ -461,19 +477,11 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
         return -1;                                      // Mailbox is flagged for removal
     else if (mailbox->used_slots == mailbox->max_slots) // Mailbox is full, add process to producer queue
     {
-        ShadowProcess *process = &shadow_table[getpid() % MAXPROC];
-        process->pid = getpid();
+        // Setup shadow process
+        ShadowProcess* process = add_shadow_process(getpid());
 
         // Add process to producer queue
-        if (mailbox->producer_queue == NULL)
-            mailbox->producer_queue = process;
-        else
-        {
-            ShadowProcess *last_process = mailbox->producer_queue;
-            while (last_process->producer_queue_next != NULL)
-                last_process = last_process->producer_queue_next;
-            last_process->producer_queue_next = process;
-        }
+        enqueue_producer(mailbox, process);
 
         // Would normally block, but returns -2
         return -2;
@@ -540,18 +548,11 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     // If no deliverable slot found, add the current process to the consumer queue and block
     if (slot == NULL)
     {
-        ShadowProcess* current = &shadow_table[getpid() % MAXPROC];
-        current->pid = getpid();
+        // Setup shadow process
+        ShadowProcess* current = add_shadow_process(getpid());
 
-        if (mailbox->consumer_queue == NULL)
-            mailbox->consumer_queue = current;
-        else
-        {
-            ShadowProcess *last = mailbox->consumer_queue;
-            while (last->consumer_queue_next != NULL)
-                last = last->consumer_queue_next;
-            last->consumer_queue_next = current;
-        }
+        // Add process to consumer queue
+        enqueue_consumer(mailbox, current);
 
         return -2; // Would be a block, but returns -2 and skips the ensuing delivery
     }
