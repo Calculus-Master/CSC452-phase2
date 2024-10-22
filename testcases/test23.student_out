@@ -8,5 +8,3 @@ XXp1(): started
 XXp1(): sending message to mailbox 7
 XXp2(): started
 XXp2(): receiving message from mailbox 7
-SIMULATOR TRAP: USLOSS_IntVec[USLOSS_CLOCK_INT] is NULL!
-

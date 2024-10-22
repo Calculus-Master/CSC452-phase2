@@ -12,5 +12,14 @@ XXp3(): started
 XXp3(): MboxRelease returned 0
 
 start2(): joined with kid 8, status = 4
-SIMULATOR TRAP: USLOSS_IntVec[USLOSS_CLOCK_INT] is NULL!
+XXp2a(): after send of message, result = -1
 
+start2(): joined with kid 4, status = 3
+XXp2b(): after send of message, result = -1
+
+start2(): joined with kid 5, status = 3
+XXp2c(): after send of message, result = -1
+
+start2(): joined with kid 6, status = 3
+failed to send to released mailbox ... success
+finish(): The simulation is now terminating.
