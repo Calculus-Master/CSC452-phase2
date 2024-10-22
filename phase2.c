@@ -93,10 +93,10 @@ int getDeviceMailbox(int type, int unit)
 
 static void clock_interrupt_handler(int type, void *payload)
 {
-    int current_time = currentTime() / 1000; // Call to get the current clock time in ms.
+    int current_time = currentTime(); // Call to get the current clock time in ms.
     // USLOSS_Console("Clock interrupt at time %d\n", current_time);
 
-    if (current_time - last_clock_time >= 100)
+    if (current_time - last_clock_time >= 100 * 1000)
     {
         // USLOSS_Console("SENDING MESSAGE at time %d\n", current_time);
         // int res =
@@ -588,37 +588,10 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         return -1; // Mailbox is flagged for removal
 
     // Search for a claimed slot, or the first unclaimed slot
-    MailSlot *prev = NULL;
-    MailSlot *slot = mailbox->slot_queue;
-    while (slot != NULL)
-    {
-        // Deliverable slot found if claimed by current process or unclaimed by any
-        // Break out of loop if so to actually deliver the message
-        if (slot->claimed_by_pid == getpid() || !slot->claimed_by_pid)
-            break;
+    MailSlot* slot = retrieve_slot(mailbox, getpid());
 
-        prev = slot;
-        slot = slot->queue_next;
-    }
-
-    // If no deliverable slot found, add the current process to the consumer queue and block
-    if (slot == NULL)
-    {
-        // Setup shadow process
-        ShadowProcess* current = add_shadow_process(getpid());
-
-        // Add process to consumer queue
-        enqueue_consumer(mailbox, current);
-
-        return -2; // Would be a block, but returns -2 and skips the ensuing delivery
-    }
-
-    // Remove slot from mailbox
-    if (prev == NULL)
-        mailbox->slot_queue = slot->queue_next;
-    else
-        prev->queue_next = slot->queue_next;
-    mailbox->used_slots--;
+    if (slot == NULL) // No deliverable slot found, return without blocking
+        return -2;
 
     // Message too large for buffer
     if (slot->message_size > msg_max_size)
