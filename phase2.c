@@ -304,6 +304,7 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
     else if (mailbox->used_slots == mailbox->max_slots) // Mailbox is full, add process to producer queue
     {
         ShadowProcess *process = &shadow_table[getpid() % MAXPROC];
+        process->pid = getpid();
 
         // Add process to producer queue
         if (mailbox->producer_queue == NULL)
@@ -341,8 +342,7 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
             last_slot = last_slot->queue_next;
         last_slot->queue_next = slot;
     }
-
-    printf("First consumer: %p\n", mailbox->consumer_queue);
+    mailbox->used_slots++;
 
     // If there are consumers, mark this slot for delivery to the first one and wake it up
     if (mailbox->consumer_queue != NULL)
@@ -383,7 +383,9 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     // If no deliverable slot found, add the current process to the consumer queue and block
     if (slot == NULL)
     {
-        ShadowProcess *current = &shadow_table[getpid() % MAXPROC];
+        ShadowProcess* current = &shadow_table[getpid() % MAXPROC];
+        current->pid = getpid();
+
         if (mailbox->consumer_queue == NULL)
             mailbox->consumer_queue = current;
         else
@@ -395,6 +397,18 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         }
 
         blockMe();
+
+        // After returning from CS, grab the slot again (should be guaranteed to exist now)
+        prev = NULL;
+        slot = mailbox->slot_queue;
+        while (slot != NULL)
+        {
+            if (slot->claimed_by_pid == getpid() || !slot->claimed_by_pid)
+                break;
+
+            prev = slot;
+            slot = slot->queue_next;
+        }
     }
 
     // Remove slot from mailbox
@@ -402,6 +416,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         mailbox->slot_queue = slot->queue_next;
     else
         prev->queue_next = slot->queue_next;
+    mailbox->used_slots--;
 
     // Message too large for buffer
     if (slot->message_size > msg_max_size)
@@ -447,6 +462,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
     else if (mailbox->used_slots == mailbox->max_slots) // Mailbox is full, add process to producer queue
     {
         ShadowProcess *process = &shadow_table[getpid() % MAXPROC];
+        process->pid = getpid();
 
         // Add process to producer queue
         if (mailbox->producer_queue == NULL)
@@ -524,7 +540,9 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     // If no deliverable slot found, add the current process to the consumer queue and block
     if (slot == NULL)
     {
-        ShadowProcess *current = &shadow_table[getpid() % MAXPROC];
+        ShadowProcess* current = &shadow_table[getpid() % MAXPROC];
+        current->pid = getpid();
+
         if (mailbox->consumer_queue == NULL)
             mailbox->consumer_queue = current;
         else
@@ -535,7 +553,7 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
             last->consumer_queue_next = current;
         }
 
-        return -2; // Would be a block
+        return -2; // Would be a block, but returns -2 and skips the ensuing delivery
     }
 
     // Remove slot from mailbox
