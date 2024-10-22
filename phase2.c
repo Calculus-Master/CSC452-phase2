@@ -76,6 +76,13 @@ int get_next_free_mailbox_slot()
 }
 
 // Phase 2 Functions
+int getDeviceMailbox(int type, int unit)
+{
+    if(type == USLOSS_CLOCK_DEV) return clock_mbox;
+    else if (type == USLOSS_DISK_DEV) return disk_mboxes[unit];
+    else if (type == USLOSS_TERM_DEV) return terminal_mboxes[unit];
+    else return -1;
+}
 
 static void clock_interrupt_handler(int type, void *payload)
 {
@@ -399,12 +406,156 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
 {
     check_kernel_mode(__func__);
+
+    // Check if mbox_id is valid
+    if (!is_valid_mailbox_id(mbox_id))
+        return -1;
+
+    MailBox *mailbox = &mailboxes[mbox_id];
+
+    if (mailbox->flagged_for_removal)
+        return -1;                                      // Mailbox is flagged for removal
+    else if (mailbox->used_slots == mailbox->max_slots) // Mailbox is full, add process to producer queue
+    {
+        ShadowProcess *process = &shadow_table[getpid() % MAXPROC];
+
+        // Add process to producer queue
+        if (mailbox->producer_queue == NULL)
+            mailbox->producer_queue = process;
+        else
+        {
+            ShadowProcess *last_process = mailbox->producer_queue;
+            while (last_process->producer_queue_next != NULL)
+                last_process = last_process->producer_queue_next;
+            last_process->producer_queue_next = process;
+        }
+
+        // Would normally block, but returns -2
+        return -2;
+    }
+
+    int slot_index = get_next_free_mailbox_slot();
+
+    if (slot_index == -1)
+        return -2; // No global free slots
+
+    // Copy message into slot
+    MailSlot *slot = &mailslots[slot_index];
+    slot->mailbox_id = mbox_id;
+    memcpy(slot->message, msg_ptr, msg_size);
+    slot->message_size = msg_size;
+
+    // Add slot to mailbox
+    MailSlot *last_slot = mailbox->slot_queue;
+    if (last_slot == NULL)
+        mailbox->slot_queue = slot;
+    else
+    {
+        while (last_slot->queue_next != NULL)
+            last_slot = last_slot->queue_next;
+        last_slot->queue_next = slot;
+    }
+
+    // If no consumers, block (so return -2)
+    if (mailbox->consumer_queue == NULL)
+        return -2;
+
+    // Wake up a consumer and mark a slot for delivery (if it blocks in the previous step, should CS to this line)
+    // TODO: PROBABLY BUGGY
+    // Remove first consumer from queue
+    ShadowProcess *consumer = mailbox->consumer_queue;
+    mailbox->consumer_queue = consumer->consumer_queue_next;
+
+    // Set the first unclaimed slot in the queue to be claimed by the first consumer
+    // Does not remove the slot from the queue, that is done in MboxRecv()
+    // Hopefully avoids the race condition
+    MailSlot *deliver_slot = mailbox->slot_queue;
+    while (deliver_slot->claimed_by_pid)
+        deliver_slot = deliver_slot->queue_next;
+    deliver_slot->claimed_by_pid = consumer->pid;
+
+    // Unblock consumer, it will eventually grab this message
+    unblockProc(consumer->pid);
+    return 0;
 }
 
 // returns 0 if successful, 1 if no msg available, -1 if illegal args
 int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 {
     check_kernel_mode(__func__);
+
+    if (!is_valid_mailbox_id(mbox_id))
+        return -1; // Invalid mailbox id
+
+    MailBox *mailbox = &mailboxes[mbox_id];
+
+    if (mailbox->flagged_for_removal)
+        return -1; // Mailbox is flagged for removal
+
+    if (mailbox->slot_queue == NULL)
+        return -2; // No messages ready to receive, so block (return -2)
+
+    // Search for a claimed slot, or the first unclaimed slot
+    MailSlot *prev = NULL;
+    MailSlot *slot = mailbox->slot_queue;
+    while (slot != NULL)
+    {
+        // Deliverable slot found if claimed by current process or unclaimed by any
+        // Break out of loop if so to actually deliver the message
+        if (slot->claimed_by_pid == getpid() || !slot->claimed_by_pid)
+            break;
+
+        prev = slot;
+        slot = slot->queue_next;
+    }
+
+    // If no deliverable slot found, add the current process to the consumer queue and block
+    if (slot == NULL)
+    {
+        ShadowProcess *current = &shadow_table[getpid() % MAXPROC];
+        if (mailbox->consumer_queue == NULL)
+            mailbox->consumer_queue = current;
+        else
+        {
+            ShadowProcess *last = mailbox->consumer_queue;
+            while (last->consumer_queue_next != NULL)
+                last = last->consumer_queue_next;
+            last->consumer_queue_next = current;
+        }
+
+        return -2; // Would be a block
+    }
+
+    // Remove slot from mailbox
+    if (prev == NULL)
+        mailbox->slot_queue = slot->queue_next;
+    else
+        prev->queue_next = slot->queue_next;
+
+    // Message too large for buffer
+    if (slot->message_size > msg_max_size)
+    {
+        memset(slot, 0, sizeof(MailSlot));
+        return -1;
+    }
+
+    // Copy message into buffer
+    memcpy(msg_ptr, slot->message, slot->message_size);
+
+    // Free slot
+    int return_size = slot->message_size;
+    memset(slot, 0, sizeof(MailSlot));
+    slot->mailbox_id = -1;
+
+    // Unblock a producer, if any, are waiting
+    if (mailbox->producer_queue != NULL)
+    {
+        ShadowProcess *producer = mailbox->producer_queue;
+        mailbox->producer_queue = producer->producer_queue_next;
+        unblockProc(producer->pid);
+    }
+
+    return return_size;
 }
 
 // type = interrupt device type, unit = # of device (when more than one),
@@ -470,4 +621,5 @@ void wakeupByDevice(int type, int unit, int status)
 
 void phase2_start_service_processes(void)
 {
+    // Unused for this phase
 }
