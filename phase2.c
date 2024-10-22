@@ -112,7 +112,7 @@ void disk_interrupt_handler(int type, void *payload)
     int unit = (int)(long)payload; // Extract unit number from payload.
     int status;
 
-    status = USLOSS_DeviceInput(USLOSS_DISK_DEV, unit, &status); // Get current status of the disk.
+    USLOSS_DeviceInput(USLOSS_DISK_DEV, unit, &status); // Get current status of the disk.
 
     MboxCondSend(disk_mboxes[unit], &status, sizeof(int)); // Send status to the corresponding disk mailbox.
 
@@ -124,7 +124,7 @@ void terminal_interrupt_handler(int type, void *payload)
     int unit = (int)(long)payload; // Extract unit number from payload.
     int status;
 
-    status = USLOSS_DeviceInput(USLOSS_TERM_DEV, unit, &status); // Get current status of the disk.
+    USLOSS_DeviceInput(USLOSS_TERM_DEV, unit, &status); // Get current status of the disk.
 
     MboxCondSend(terminal_mboxes[unit], &status, sizeof(int)); // Send status to the corresponding disk mailbox.
 
@@ -266,14 +266,10 @@ MailSlot* retrieve_slot(MailBox* mailbox, int pid)
 }
 
 // If a mailbox is flagged for removal by Release() and has no more consumers and producers, set a flag for reuse
-int try_release_mailbox(MailBox* mailbox)
+void try_release_mailbox(MailBox* mailbox)
 {
     if(mailbox->flagged_for_removal && mailbox->consumer_queue == NULL && mailbox->producer_queue == NULL)
-    {
         mailbox->in_use = 0;
-        return 1;
-    }
-    else return 0;
 }
 
 // Phase 2 Spec Functions
@@ -323,7 +319,7 @@ int MboxCreate(int slots, int slot_size)
     check_kernel_mode(__func__);
     int old_psr = disable_interrupts();
 
-    if (slots < 0 || slot_size < 0 || slots > MAXSLOTS)
+    if (slots < 0 || slots > MAXSLOTS || slot_size < 0 || slot_size > MAX_MESSAGE)
         return -1; // Negative slots or slot_size, or slots > MAXSLOTS
 
     // Find next available mailbox
