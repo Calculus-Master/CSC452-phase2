@@ -59,6 +59,13 @@ void check_kernel_mode(const char *function_name)
     }
 }
 
+int disable_interrupts()
+{
+    int old_psr = USLOSS_PsrGet();
+    USLOSS_PsrSet(USLOSS_PsrGet() & ~USLOSS_PSR_CURRENT_INT);
+    return old_psr;
+}
+
 int is_valid_mailbox_id(int mbox_id)
 {
     if (mbox_id < 0 || mbox_id >= MAXMBOX)
@@ -163,6 +170,9 @@ void deliver_first_message(MailBox* mailbox)
 
 void phase2_init(void)
 {
+    check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
+
     // Clear out all mailboxes, slots, and shadow process table
     memset(mailboxes, 0, sizeof(mailboxes));
     memset(mailslots, 0, sizeof(mailslots));
@@ -193,12 +203,15 @@ void phase2_init(void)
     {
         systemCallVec[i] = nullsys;
     }
+
+    USLOSS_PsrSet(old_psr);
 }
 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
 int MboxCreate(int slots, int slot_size)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     if (slots < 0 || slot_size < 0)
         return -1; // Negative slots or slot_size
@@ -222,6 +235,7 @@ int MboxCreate(int slots, int slot_size)
     mbox->max_slots = slots;
     mbox->slot_size = slot_size;
 
+    USLOSS_PsrSet(old_psr);
     return next_mbox_id - 1;
 }
 
@@ -229,6 +243,7 @@ int MboxCreate(int slots, int slot_size)
 int MboxRelease(int mbox_id)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     // Check if mbox_id is valid
     if (!is_valid_mailbox_id(mbox_id))
@@ -268,6 +283,7 @@ int MboxRelease(int mbox_id)
     // Clear out mailbox
     memset(mailbox, 0, sizeof(MailBox));
 
+    USLOSS_PsrSet(old_psr);
     return 0;
 }
 
@@ -275,6 +291,7 @@ int MboxRelease(int mbox_id)
 int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     // Check if mbox_id is valid
     if (!is_valid_mailbox_id(mbox_id))
@@ -325,10 +342,13 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
         last_slot->queue_next = slot;
     }
 
+    printf("First consumer: %p\n", mailbox->consumer_queue);
+
     // If there are consumers, mark this slot for delivery to the first one and wake it up
     if (mailbox->consumer_queue != NULL)
         deliver_first_message(mailbox);
 
+    USLOSS_PsrSet(old_psr);
     return 0;
 }
 
@@ -336,6 +356,7 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     if (!is_valid_mailbox_id(mbox_id))
         return -1; // Invalid mailbox id
@@ -344,9 +365,6 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 
     if (mailbox->flagged_for_removal)
         return -1; // Mailbox is flagged for removal
-
-    if (mailbox->slot_queue == NULL)
-        blockMe(); // No messages ready to receive, so block
 
     // Search for a claimed slot, or the first unclaimed slot
     MailSlot *prev = NULL;
@@ -408,6 +426,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         unblockProc(producer->pid);
     }
 
+    USLOSS_PsrSet(old_psr);
     return return_size;
 }
 
@@ -415,6 +434,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     // Check if mbox_id is valid
     if (!is_valid_mailbox_id(mbox_id))
@@ -469,6 +489,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
     if (mailbox->consumer_queue != NULL)
         deliver_first_message(mailbox);
 
+    USLOSS_PsrSet(old_psr);
     return 0;
 }
 
@@ -476,6 +497,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
 int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     if (!is_valid_mailbox_id(mbox_id))
         return -1; // Invalid mailbox id
@@ -484,9 +506,6 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 
     if (mailbox->flagged_for_removal)
         return -1; // Mailbox is flagged for removal
-
-    if (mailbox->slot_queue == NULL)
-        return -2; // No messages ready to receive, so block (return -2)
 
     // Search for a claimed slot, or the first unclaimed slot
     MailSlot *prev = NULL;
@@ -548,6 +567,7 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         unblockProc(producer->pid);
     }
 
+    USLOSS_PsrSet(old_psr);
     return return_size;
 }
 
@@ -556,6 +576,7 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 void waitDevice(int type, int unit, int *status)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     // Validate type and unit arguments
     if ((type != USLOSS_CLOCK_DEV && type != USLOSS_DISK_DEV && type != USLOSS_TERM_DEV) ||
@@ -579,11 +600,14 @@ void waitDevice(int type, int unit, int *status)
 
     // Store the received device status in the out parameter
     *status = message;
+
+    USLOSS_PsrSet(old_psr);
 }
 
 void wakeupByDevice(int type, int unit, int status)
 {
     check_kernel_mode(__func__);
+    int old_psr = disable_interrupts();
 
     // Validate type and unit arguments (similar to waitDevice)
     if ((type != USLOSS_CLOCK_DEV && type != USLOSS_DISK_DEV && type != USLOSS_TERM_DEV) ||
@@ -610,6 +634,8 @@ void wakeupByDevice(int type, int unit, int status)
         USLOSS_Console("Error: MboxCondSend failed in wakeupByDevice.\n");
         USLOSS_Halt(1);
     }
+
+    USLOSS_PsrSet(old_psr);
 }
 
 void phase2_start_service_processes(void)
