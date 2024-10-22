@@ -146,7 +146,8 @@ void nullsys()
 // Mailbox Helpers
 
 // Marks the first mail slot for delivery to the first consumer in queue
-// Called with the assumption that the mailbox has at least one consumer
+// Called with the assumption that there is at least one consumer in the queue
+// May not wake up any consumers if all the slots are claimed slots
 void deliver_first_message(MailBox* mailbox)
 {
     // Remove first consumer from queue
@@ -157,14 +158,21 @@ void deliver_first_message(MailBox* mailbox)
     // Does not remove the slot from the queue, that is done in MboxRecv()
     // Hopefully avoids the race condition
     MailSlot *deliver_slot = mailbox->slot_queue;
-    while (deliver_slot->claimed_by_pid)
+    while (deliver_slot != NULL && deliver_slot->claimed_by_pid)
         deliver_slot = deliver_slot->queue_next;
-    deliver_slot->claimed_by_pid = consumer->pid;
 
-    // Unblock consumer, it will eventually grab this message
-    unblockProc(consumer->pid);
+    // If there is an unclaimed slot, wake up the consumer and claim it
+    if(deliver_slot != NULL)
+    {
+        // Claim slot by the first consumer
+        deliver_slot->claimed_by_pid = consumer->pid;
+
+        // Unblock consumer, it will eventually grab this message
+        unblockProc(consumer->pid);
+    }
 }
 
+// Adds a shadow process to the PCB, only done when a consumer or producer is about to block
 ShadowProcess* add_shadow_process(int pid)
 {
     ShadowProcess* process = &shadow_table[pid % MAXPROC];
@@ -175,7 +183,15 @@ ShadowProcess* add_shadow_process(int pid)
 // Adds the given process to the mailbox's consumer queue
 void enqueue_consumer(MailBox* mailbox, ShadowProcess* process)
 {
-
+    if (mailbox->consumer_queue == NULL)
+        mailbox->consumer_queue = process;
+    else
+    {
+        ShadowProcess *last = mailbox->consumer_queue;
+        while (last->consumer_queue_next != NULL)
+            last = last->consumer_queue_next;
+        last->consumer_queue_next = process;
+    }
 }
 
 // Adds the given process to the mailbox's producer queue
