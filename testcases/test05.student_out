@@ -7,5 +7,5 @@ XXp2(): started
 XXp2(): receiving message from mailbox 7
 XXp1(): started
 XXp1(): sending message to mailbox 7
-SIMULATOR TRAP: USLOSS_IntVec[USLOSS_CLOCK_INT] is NULL!
-
+XXp1(): after send of message, result = 0
+start2(): joined with kid 4, status = 3

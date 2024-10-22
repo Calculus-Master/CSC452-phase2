@@ -75,7 +75,7 @@ int get_next_free_mailbox_slot()
     return -1;
 }
 
-// Phase 2 Functions
+// Phase 2 Device Helpers
 int getDeviceMailbox(int type, int unit)
 {
     if(type == USLOSS_CLOCK_DEV) return clock_mbox;
@@ -135,6 +135,31 @@ void nullsys()
     USLOSS_Console("nullsys(): error\n");
     USLOSS_Halt(1);
 }
+
+// Mailbox Helpers
+
+// Marks the first mail slot for delivery to the first consumer in queue
+// Called with the assumption that the mailbox has at least one consumer
+void deliver_first_message(MailBox* mailbox)
+{
+    // Remove first consumer from queue
+    ShadowProcess *consumer = mailbox->consumer_queue;
+    mailbox->consumer_queue = consumer->consumer_queue_next;
+
+    // Set the first unclaimed slot in the queue to be claimed by the first consumer
+    // Does not remove the slot from the queue, that is done in MboxRecv()
+    // Hopefully avoids the race condition
+    MailSlot *deliver_slot = mailbox->slot_queue;
+    while (deliver_slot->claimed_by_pid)
+        deliver_slot = deliver_slot->queue_next;
+    deliver_slot->claimed_by_pid = consumer->pid;
+
+    // Unblock consumer, it will eventually grab this message
+    unblockProc(consumer->pid);
+}
+
+
+// Phase 2 Spec Functions
 
 void phase2_init(void)
 {
@@ -300,26 +325,10 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
         last_slot->queue_next = slot;
     }
 
-    // If no consumers, block
-    if (mailbox->consumer_queue == NULL)
-        blockMe();
+    // If there are consumers, mark this slot for delivery to the first one and wake it up
+    if (mailbox->consumer_queue != NULL)
+        deliver_first_message(mailbox);
 
-    // Wake up a consumer and mark a slot for delivery (if it blocks in the previous step, should CS to this line)
-    // TODO: PROBABLY BUGGY
-    // Remove first consumer from queue
-    ShadowProcess *consumer = mailbox->consumer_queue;
-    mailbox->consumer_queue = consumer->consumer_queue_next;
-
-    // Set the first unclaimed slot in the queue to be claimed by the first consumer
-    // Does not remove the slot from the queue, that is done in MboxRecv()
-    // Hopefully avoids the race condition
-    MailSlot *deliver_slot = mailbox->slot_queue;
-    while (deliver_slot->claimed_by_pid)
-        deliver_slot = deliver_slot->queue_next;
-    deliver_slot->claimed_by_pid = consumer->pid;
-
-    // Unblock consumer, it will eventually grab this message
-    unblockProc(consumer->pid);
     return 0;
 }
 
@@ -456,26 +465,10 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
         last_slot->queue_next = slot;
     }
 
-    // If no consumers, block (so return -2)
-    if (mailbox->consumer_queue == NULL)
-        return -2;
+    // If there are consumers, mark this slot for delivery to the first one and wake it up
+    if (mailbox->consumer_queue != NULL)
+        deliver_first_message(mailbox);
 
-    // Wake up a consumer and mark a slot for delivery (if it blocks in the previous step, should CS to this line)
-    // TODO: PROBABLY BUGGY
-    // Remove first consumer from queue
-    ShadowProcess *consumer = mailbox->consumer_queue;
-    mailbox->consumer_queue = consumer->consumer_queue_next;
-
-    // Set the first unclaimed slot in the queue to be claimed by the first consumer
-    // Does not remove the slot from the queue, that is done in MboxRecv()
-    // Hopefully avoids the race condition
-    MailSlot *deliver_slot = mailbox->slot_queue;
-    while (deliver_slot->claimed_by_pid)
-        deliver_slot = deliver_slot->queue_next;
-    deliver_slot->claimed_by_pid = consumer->pid;
-
-    // Unblock consumer, it will eventually grab this message
-    unblockProc(consumer->pid);
     return 0;
 }
 
