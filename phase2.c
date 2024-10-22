@@ -47,8 +47,6 @@ static int clock_mbox;
 static int disk_mboxes[2];
 static int terminal_mboxes[4];
 
-int next_mbox_id = 0;
-
 // Helper Functions
 void check_kernel_mode(const char *function_name)
 {
@@ -93,9 +91,11 @@ int getDeviceMailbox(int type, int unit)
 
 static void clock_interrupt_handler(int type, void *payload)
 {
-    int current_time = currentTime(); // Call to get the current clock time in ms.
+    // Returns clock time in µs
+    int current_time = currentTime();
     // USLOSS_Console("Clock interrupt at time %d\n", current_time);
 
+    // Send message every 100ms
     if (current_time - last_clock_time >= 100 * 1000)
     {
         // USLOSS_Console("SENDING MESSAGE at time %d\n", current_time);
@@ -265,6 +265,17 @@ MailSlot* retrieve_slot(MailBox* mailbox, int pid)
     return slot;
 }
 
+// If a mailbox is flagged for removal by Release() and has no more consumers and producers, set a flag for reuse
+int try_release_mailbox(MailBox* mailbox)
+{
+    if(mailbox->flagged_for_removal && mailbox->consumer_queue == NULL && mailbox->producer_queue == NULL)
+    {
+        mailbox->in_use = 0;
+        return 1;
+    }
+    else return 0;
+}
+
 // Phase 2 Spec Functions
 
 void phase2_init(void)
@@ -312,19 +323,24 @@ int MboxCreate(int slots, int slot_size)
     check_kernel_mode(__func__);
     int old_psr = disable_interrupts();
 
-    if (slots < 0 || slot_size < 0)
-        return -1; // Negative slots or slot_size
+    if (slots < 0 || slot_size < 0 || slots > MAXSLOTS)
+        return -1; // Negative slots or slot_size, or slots > MAXSLOTS
 
     // Find next available mailbox
-    int init_mbox_id = next_mbox_id++ % MAXMBOX;
-    MailBox *mbox = &mailboxes[init_mbox_id];
-    while (mbox->in_use)
+    MailBox* mbox;
+    int mailbox_id;
+    for(mailbox_id = 0; mailbox_id < MAXMBOX; mailbox_id++)
     {
-        if (next_mbox_id % MAXMBOX == init_mbox_id)
-            return -1; // No free mailboxes
+        mbox = &mailboxes[mailbox_id];
+        try_release_mailbox(mbox);
 
-        mbox = &mailboxes[next_mbox_id++ % MAXMBOX];
+        if(!mbox->in_use)
+            break;
+        else mbox = NULL;
     }
+
+    if(mbox == NULL)
+        return -1; // No more mailboxes available
 
     // Reset mailbox in case there's left over data
     memset(mbox, 0, sizeof(MailBox));
@@ -335,7 +351,7 @@ int MboxCreate(int slots, int slot_size)
     mbox->slot_size = slot_size;
 
     USLOSS_PsrSet(old_psr);
-    return next_mbox_id - 1;
+    return mailbox_id;
 }
 
 // returns 0 if successful, -1 if invalid arg
@@ -413,28 +429,34 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
         }
     }
 
-    int slot_index = get_next_free_mailbox_slot();
-
-    if (slot_index == -1)
-        return -2; // No global free slots
-
-    // Copy message into slot
-    MailSlot *slot = &mailslots[slot_index];
-    slot->mailbox_id = mbox_id;
-    memcpy(slot->message, msg_ptr, msg_size);
-    slot->message_size = msg_size;
-
-    // Add slot to mailbox
-    MailSlot *last_slot = mailbox->slot_queue;
-    if (last_slot == NULL)
-        mailbox->slot_queue = slot;
-    else
+    if(mailbox->max_slots)
     {
-        while (last_slot->queue_next != NULL)
-            last_slot = last_slot->queue_next;
-        last_slot->queue_next = slot;
+        int slot_index = get_next_free_mailbox_slot();
+
+        if (slot_index == -1)
+            return -2; // No global free slots
+        else if(msg_size > mailbox->slot_size)
+            return -1; // Message too large for mailbox
+
+        // Copy message into slot (skipped if 0 size message)
+        MailSlot *slot = &mailslots[slot_index];
+        slot->mailbox_id = mbox_id;
+        if(msg_size > 0)
+            memcpy(slot->message, msg_ptr, msg_size);
+        slot->message_size = msg_size;
+
+        // Add slot to mailbox
+        MailSlot *last_slot = mailbox->slot_queue;
+        if (last_slot == NULL)
+            mailbox->slot_queue = slot;
+        else
+        {
+            while (last_slot->queue_next != NULL)
+                last_slot = last_slot->queue_next;
+            last_slot->queue_next = slot;
+        }
+        mailbox->used_slots++;
     }
-    mailbox->used_slots++;
 
     // If there are consumers, mark this slot for delivery to the first one and wake it up
     if (mailbox->consumer_queue != NULL)
@@ -458,10 +480,18 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     if (mailbox->flagged_for_removal)
         return -1; // Mailbox is flagged for removal
 
+    // Zero Slot Mailbox with waiting producer
+    if(mailbox->max_slots == 0 && mailbox->producer_queue != NULL)
+    {
+        dequeue_producer(mailbox);
+        return 0;
+    }
+
     // Search for a claimed slot, or the first unclaimed slot
     MailSlot* slot = retrieve_slot(mailbox, getpid());
 
     // If no deliverable slot found, add the current process to the consumer queue and block
+    // Zero Slot Mailboxes without a waiting producer should block here
     if (slot == NULL)
     {
         // Setup shadow process
@@ -479,6 +509,8 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
             dequeue_consumer(mailbox);
             return -1;
         }
+        else if(mailbox->max_slots == 0)
+            return 0;
 
         // Otherwise, attempt retrieval of slot again
         // Should be guaranteed to succeed unless its a zero slot mailbox
@@ -487,31 +519,29 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
 
     int return_size = 0;
 
-    // Slot delivery to consumer, skipped if zero-slot mailbox
-    if(slot != NULL)
+    // Slot delivery to consumer
+    // TODO: Remove before submitting
+    if(mailbox->max_slots == 0 || slot == NULL)
     {
-        // TODO: Remove before submitting
-        if(mailbox->max_slots == 0)
-        {
-            USLOSS_Console("ERROR: Slot delivery attempted on a zero-slot mailbox.\n");
-            USLOSS_Halt(1);
-        }
+        USLOSS_Console("ERROR: Slot delivery attempted on a zero-slot mailbox (or slot is null here for some reason).\n");
+        USLOSS_Halt(1);
+    }
 
-        // Message too large for buffer
-        if (slot->message_size > msg_max_size)
-        {
-            memset(slot, 0, sizeof(MailSlot));
-            return -1;
-        }
+    // Message too large for buffer
+    if (slot->message_size > msg_max_size)
+    {
+        memset(slot, 0, sizeof(MailSlot));
+        return -1;
+    }
 
-        // Copy message into buffer
+    // Copy message into buffer (skipped if 0 size message)
+    if(slot->message_size > 0)
         memcpy(msg_ptr, slot->message, slot->message_size);
 
-        // Free slot
-        return_size = slot->message_size;
-        memset(slot, 0, sizeof(MailSlot));
-        slot->mailbox_id = -1;
-    }
+    // Free slot
+    return_size = slot->message_size;
+    memset(slot, 0, sizeof(MailSlot));
+    slot->mailbox_id = -1;
 
     // Unblock a producer, if any, are waiting
     dequeue_producer(mailbox);
@@ -547,10 +577,11 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
     if (slot_index == -1)
         return -2; // No global free slots
 
-    // Copy message into slot
+    // Copy message into slot (skipped if 0 size message)
     MailSlot *slot = &mailslots[slot_index];
     slot->mailbox_id = mbox_id;
-    memcpy(slot->message, msg_ptr, msg_size);
+    if(msg_size > 0)
+        memcpy(slot->message, msg_ptr, msg_size);
     slot->message_size = msg_size;
 
     // Add slot to mailbox
@@ -587,6 +618,13 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     if (mailbox->flagged_for_removal)
         return -1; // Mailbox is flagged for removal
 
+    // Zero Slot Mailbox with waiting producer
+    if(mailbox->max_slots == 0 && mailbox->producer_queue != NULL)
+    {
+        dequeue_producer(mailbox);
+        return 0;
+    }
+
     // Search for a claimed slot, or the first unclaimed slot
     MailSlot* slot = retrieve_slot(mailbox, getpid());
 
@@ -600,8 +638,9 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         return -1;
     }
 
-    // Copy message into buffer
-    memcpy(msg_ptr, slot->message, slot->message_size);
+    // Copy message into buffer (skipped if 0 size message)
+    if(slot->message_size > 0)
+        memcpy(msg_ptr, slot->message, slot->message_size);
 
     // Free slot
     int return_size = slot->message_size;
