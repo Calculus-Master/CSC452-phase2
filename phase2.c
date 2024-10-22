@@ -47,6 +47,8 @@ static int clock_mbox;
 static int disk_mboxes[2];
 static int terminal_mboxes[4];
 
+void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
+
 // Helper Functions
 void check_kernel_mode(const char *function_name)
 {
@@ -131,15 +133,20 @@ void terminal_interrupt_handler(int type, void *payload)
     dispatcher();
 }
 
-// void syscall_interrupt_handler(int type, void *payload)
-// {
-//     USLOSS_Sysargs *args = (USLOSS_Sysargs *)payload;
-//     systemCallVec[args->number](args);
-// }
-
-void nullsys()
+void syscall_interrupt_handler(int type, void* args)
 {
-    USLOSS_Console("nullsys(): error\n");
+    int num = ((USLOSS_Sysargs*)args)->number;
+
+    if(num >= USLOSS_MAX_SYSCALLS)
+        USLOSS_Console("syscallHandler(): Invalid syscall number %d\n", num);
+    else
+        systemCallVec[num](num);
+}
+
+void nullsys(int num)
+{
+    USLOSS_Console("nullsys(): Program called an unimplemented syscall.  syscall no: %d   PSR: %#.2x\n", num, USLOSS_PsrGet());
+
     USLOSS_Halt(1);
 }
 
@@ -297,14 +304,13 @@ void phase2_init(void)
     for (int i = 0; i < 4; i++)
         terminal_mboxes[i] = MboxCreate(1, sizeof(int));
 
+    // Set up interrupt handlers
     USLOSS_IntVec[USLOSS_CLOCK_INT] = clock_interrupt_handler;
     USLOSS_IntVec[USLOSS_DISK_INT] = disk_interrupt_handler;
     USLOSS_IntVec[USLOSS_TERM_INT] = terminal_interrupt_handler;
-    // USLOSS_IntVec[USLOSS_SYSCALL_INT] = syscall_interrupt_handler;
+    USLOSS_IntVec[USLOSS_SYSCALL_INT] = syscall_interrupt_handler;
 
-    // define systemcallvec
-    void (*systemCallVec[MAXSYSCALLS])(USLOSS_Sysargs *args);
-
+    // Initialize all syscalls to nullsys
     for (int i = 0; i < MAXSYSCALLS; i++)
     {
         systemCallVec[i] = nullsys;
