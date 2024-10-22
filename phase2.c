@@ -208,6 +208,28 @@ void enqueue_producer(MailBox* mailbox, ShadowProcess* process)
     }
 }
 
+// Clears out the first consumer in the mailbox's consumer queue, unblocking if it exists
+void dequeue_consumer(MailBox* mailbox)
+{
+    ShadowProcess* consumer = mailbox->consumer_queue;
+    if(consumer != NULL)
+    {
+        mailbox->consumer_queue = consumer->consumer_queue_next;
+        unblockProc(consumer->pid);
+    }
+}
+
+// Clears out the first producer in the mailbox's producer queue, unblocking if it exists
+void dequeue_producer(MailBox* mailbox)
+{
+    ShadowProcess* producer = mailbox->producer_queue;
+    if(producer != NULL)
+    {
+        mailbox->producer_queue = producer->producer_queue_next;
+        unblockProc(producer->pid);
+    }
+}
+
 // Phase 2 Spec Functions
 
 void phase2_init(void)
@@ -306,25 +328,13 @@ int MboxRelease(int mbox_id)
         slot = next;
     }
 
-    // Wake up consumer queue processes
-    ShadowProcess *consumer = mailbox->consumer_queue;
-    while (consumer != NULL)
-    {
-        unblockProc(consumer->pid);
-        consumer = consumer->consumer_queue_next;
-    }
-
-    // Wake up producer queue processes
-    ShadowProcess *producer = mailbox->producer_queue;
-    while (producer != NULL)
-    {
-        printf("Unblocking producer %d\n", producer->pid);
-        unblockProc(producer->pid);
-        producer = producer->producer_queue_next;
-    }
+    // Wake up the first consumer and producer in queue
+    // Others will be woken up one at a time in Send/Recv after the first ones unblock
+    dequeue_producer(mailbox);
+    dequeue_consumer(mailbox);
 
     // Clear out mailbox
-    memset(mailbox, 0, sizeof(MailBox));
+    // memset(mailbox, 0, sizeof(MailBox));
 
     USLOSS_PsrSet(old_psr);
     return 0;
@@ -355,8 +365,12 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
         // Block (when the mailbox has space it'll unblock)
         blockMe();
 
-        // Check if the mailbox got released while blocked, don't need to check anything else from above
-        if(mailbox->flagged_for_removal) return -1;
+        // Check if the mailbox got released while blocked, if so wake up the next producer before returning
+        if(mailbox->flagged_for_removal)
+        {
+            dequeue_producer(mailbox);
+            return -1;
+        }
     }
 
     int slot_index = get_next_free_mailbox_slot();
@@ -430,7 +444,14 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         // Block (when a message is available it'll unblock)
         blockMe();
 
-        // After returning from CS, grab the slot again (should be guaranteed to exist now)
+        // Check if the mailbox got released while blocked, if so wake up the next consumer before returning
+        if(mailbox->flagged_for_removal)
+        {
+            dequeue_consumer(mailbox);
+            return -1;
+        }
+
+        // If it didn't get released, after returning from CS, grab the slot again (should be guaranteed to exist now)
         prev = NULL;
         slot = mailbox->slot_queue;
         while (slot != NULL)
@@ -466,12 +487,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     slot->mailbox_id = -1;
 
     // Unblock a producer, if any, are waiting
-    if (mailbox->producer_queue != NULL)
-    {
-        ShadowProcess *producer = mailbox->producer_queue;
-        mailbox->producer_queue = producer->producer_queue_next;
-        unblockProc(producer->pid);
-    }
+    dequeue_producer(mailbox);
 
     USLOSS_PsrSet(old_psr);
     return return_size;
@@ -595,12 +611,7 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     slot->mailbox_id = -1;
 
     // Unblock a producer, if any, are waiting
-    if (mailbox->producer_queue != NULL)
-    {
-        ShadowProcess *producer = mailbox->producer_queue;
-        mailbox->producer_queue = producer->producer_queue_next;
-        unblockProc(producer->pid);
-    }
+    dequeue_producer(mailbox);
 
     USLOSS_PsrSet(old_psr);
     return return_size;
