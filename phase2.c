@@ -91,7 +91,7 @@ int getDeviceMailbox(int type, int unit)
     else return -1;
 }
 
-static void clock_interrupt_handler(int type, void *payload)
+static void clock_interrupt_handler(__attribute__ ((unused)) int type, __attribute__ ((unused)) void *payload)
 {
     // Returns clock time in µs
     int current_time = currentTime();
@@ -109,7 +109,7 @@ static void clock_interrupt_handler(int type, void *payload)
     dispatcher(); // Dispatcher call required.
 }
 
-void disk_interrupt_handler(int type, void *payload)
+void disk_interrupt_handler(__attribute__ ((unused)) int type, void *payload)
 {
     int unit = (int)(long)payload; // Extract unit number from payload.
     int status;
@@ -121,7 +121,7 @@ void disk_interrupt_handler(int type, void *payload)
     dispatcher();
 }
 
-void terminal_interrupt_handler(int type, void *payload)
+void terminal_interrupt_handler(__attribute__ ((unused)) int type, void *payload)
 {
     int unit = (int)(long)payload; // Extract unit number from payload.
     int status;
@@ -133,12 +133,15 @@ void terminal_interrupt_handler(int type, void *payload)
     dispatcher();
 }
 
-void syscall_interrupt_handler(int type, void* args)
+void syscall_interrupt_handler(int type, void* payload)
 {
-    int num = ((USLOSS_Sysargs*)args)->number;
+    int num = ((USLOSS_Sysargs*)payload)->number;
 
     if(num >= USLOSS_MAX_SYSCALLS)
+    {
         USLOSS_Console("syscallHandler(): Invalid syscall number %d\n", num);
+        USLOSS_Halt(1);
+    }
     else
         systemCallVec[num](num);
 }
