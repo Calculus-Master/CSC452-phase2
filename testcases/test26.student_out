@@ -35,17 +35,17 @@ XXp1(): received message #2 rc 15   message 'Second message'
 XXp1(): received message #3 rc 14   message 'Third message'
 XXp1(): received message #4 rc 15   message 'Fourth message'
 XXp1(): received message #5 rc 14   message 'Fifth message'
-XXp1(): received message #6 rc 15   message 'Eighth message'
-XXp2(): priority 2, after sending message, result = 0
-XXp1(): received message #7 rc 16   message 'Seventh message'
+XXp1(): received message #6 rc 16   message 'Seventh message'
 XXp2(): priority 3, after sending message, result = 0
-XXp3(): join'd with child 7 whose status is 2
 XXp3(): join'd with child 6 whose status is 3
-XXp1(): received message #8 rc 14   message 'Sixth message'
+XXp1(): received message #7 rc 14   message 'Sixth message'
+XXp1(): received message #8 rc 15   message 'Eighth message'
 XXp1(): done sending, now quitting
 
+XXp2(): priority 2, after sending message, result = 0
 XXp2(): priority 4, after sending message, result = 0
 XXp3(): join'd with child 8 whose status is 1
+XXp3(): join'd with child 7 whose status is 2
 XXp3(): join'd with child 5 whose status is 4
 start2(): joined with kid 4, status = 5
 finish(): The simulation is now terminating.

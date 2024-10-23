@@ -5,9 +5,12 @@
 #include <stdlib.h>
 
 // Data Structures
+typedef struct MailSlot MailSlot;
+
 typedef struct ShadowProcess
 {
     int pid;
+    int awake;
 
     struct ShadowProcess *consumer_queue_next;
     struct ShadowProcess *producer_queue_next;
@@ -133,9 +136,10 @@ void terminal_interrupt_handler(__attribute__ ((unused)) int type, void *payload
     dispatcher();
 }
 
-void syscall_interrupt_handler(int type, void* payload)
+void syscall_interrupt_handler(__attribute__ ((unused)) int type, void* payload)
 {
-    int num = ((USLOSS_Sysargs*)payload)->number;
+    USLOSS_Sysargs* args = (USLOSS_Sysargs*)payload;
+    int num = args->number;
 
     if(num >= USLOSS_MAX_SYSCALLS)
     {
@@ -143,12 +147,12 @@ void syscall_interrupt_handler(int type, void* payload)
         USLOSS_Halt(1);
     }
     else
-        systemCallVec[num](num);
+        systemCallVec[num](args);
 }
 
-void nullsys(int num)
+void nullsys(USLOSS_Sysargs* args)
 {
-    USLOSS_Console("nullsys(): Program called an unimplemented syscall.  syscall no: %d   PSR: %#.2x\n", num, USLOSS_PsrGet());
+    USLOSS_Console("nullsys(): Program called an unimplemented syscall.  syscall no: %d   PSR: %#.2x\n", args->number, USLOSS_PsrGet());
 
     USLOSS_Halt(1);
 }
@@ -186,6 +190,7 @@ void deliver_first_message(MailBox* mailbox)
 ShadowProcess* add_shadow_process(int pid)
 {
     ShadowProcess* process = &shadow_table[pid % MAXPROC];
+    memset(process, 0, sizeof(ShadowProcess));
     process->pid = pid;
     return process;
 }
@@ -240,6 +245,8 @@ void dequeue_producer(MailBox* mailbox)
     }
 }
 
+// Retrieves the first deliverable slot in the mailbox for the given process
+// Returns NULL when there isn't an available slot, or it's a zero-slot mailbox
 MailSlot* retrieve_slot(MailBox* mailbox, int pid)
 {
     // Zero-Slot Mailboxes will skip this entire function
@@ -280,6 +287,22 @@ void try_release_mailbox(MailBox* mailbox)
 {
     if(mailbox->flagged_for_removal && mailbox->consumer_queue == NULL && mailbox->producer_queue == NULL)
         mailbox->in_use = 0;
+}
+
+// Adds a new mail slot to the given mailbox's slot queue
+// Assumes appropriate checks have been done before this
+void add_slot_to_mailbox(MailBox* mailbox, MailSlot* slot)
+{
+    MailSlot *last_slot = mailbox->slot_queue;
+    if (last_slot == NULL)
+        mailbox->slot_queue = slot;
+    else
+    {
+        while (last_slot->queue_next != NULL)
+            last_slot = last_slot->queue_next;
+        last_slot->queue_next = slot;
+    }
+    mailbox->used_slots++;
 }
 
 // Phase 2 Spec Functions
@@ -410,6 +433,8 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 
     if (mailbox->flagged_for_removal) // Mailbox is flagged for removal
         return -1;
+    else if(msg_size > mailbox->slot_size)
+        return -1; // Message too large for mailbox
     else if(mailbox->max_slots == 0 && mailbox->consumer_queue != NULL) // Zero-Slot Mailbox but there's a consumer
     {
         dequeue_consumer(mailbox);
@@ -440,8 +465,6 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
 
         if (slot_index == -1)
             return -2; // No global free slots
-        else if(msg_size > mailbox->slot_size)
-            return -1; // Message too large for mailbox
 
         // Copy message into slot (skipped if 0 size message)
         MailSlot *slot = &mailslots[slot_index];
@@ -451,21 +474,26 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size)
         slot->message_size = msg_size;
 
         // Add slot to mailbox
-        MailSlot *last_slot = mailbox->slot_queue;
-        if (last_slot == NULL)
-            mailbox->slot_queue = slot;
-        else
-        {
-            while (last_slot->queue_next != NULL)
-                last_slot = last_slot->queue_next;
-            last_slot->queue_next = slot;
-        }
-        mailbox->used_slots++;
+        add_slot_to_mailbox(mailbox, slot);
     }
 
     // If there are consumers, mark this slot for delivery to the first one and wake it up
     if (mailbox->consumer_queue != NULL)
         deliver_first_message(mailbox);
+
+    // If the current process was the first producer, remove it from the queue
+    // Then, if there are extra producers and space in the mailbox, wake up the next one
+    // This aims to ensure the ordering guarantee
+    if(mailbox->producer_queue && mailbox->producer_queue->pid == getpid())
+    {
+        mailbox->producer_queue = mailbox->producer_queue->producer_queue_next;
+
+        if(mailbox->used_slots < mailbox->max_slots && mailbox->producer_queue)
+        {
+            mailbox->producer_queue->awake = 1;
+            unblockProc(mailbox->producer_queue->pid);
+        }
+    }
 
     USLOSS_PsrSet(old_psr);
     return 0;
@@ -522,22 +550,15 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
         slot = retrieve_slot(mailbox, getpid());
     }
 
-    int return_size = 0;
-
-    // Slot delivery to consumer
-    // TODO: Remove before submitting
-    if(mailbox->max_slots == 0 || slot == NULL)
-    {
-        USLOSS_Console("ERROR: Slot delivery attempted on a zero-slot mailbox (or slot is null here for some reason).\n");
-        USLOSS_Halt(1);
-    }
-
     // Message too large for buffer
     if (slot->message_size > msg_max_size)
     {
         memset(slot, 0, sizeof(MailSlot));
         return -1;
     }
+
+    // Slot delivery to consumer
+    int return_size = 0;
 
     // Copy message into buffer (skipped if 0 size message)
     if(slot->message_size > 0)
@@ -549,7 +570,12 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size)
     slot->mailbox_id = -1;
 
     // Unblock a producer, if any, are waiting
-    dequeue_producer(mailbox);
+    // Does not remove from queue yet, just marks as "awake" to ensure the ordering guarantee
+    if(mailbox->producer_queue && !mailbox->producer_queue->awake)
+    {
+        mailbox->producer_queue->awake = 1;
+        unblockProc(mailbox->producer_queue->pid);
+    }
 
     USLOSS_PsrSet(old_psr);
     return return_size;
@@ -590,16 +616,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size)
     slot->message_size = msg_size;
 
     // Add slot to mailbox
-    MailSlot *last_slot = mailbox->slot_queue;
-    if (last_slot == NULL)
-        mailbox->slot_queue = slot;
-    else
-    {
-        while (last_slot->queue_next != NULL)
-            last_slot = last_slot->queue_next;
-        last_slot->queue_next = slot;
-    }
-    mailbox->used_slots++;
+    add_slot_to_mailbox(mailbox, slot);
 
     // If there are consumers, mark this slot for delivery to the first one and wake it up
     if (mailbox->consumer_queue != NULL)
