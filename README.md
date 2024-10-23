@@ -1,1 +1,1 @@
-Testcase 13 - Our code and logic is perfectly correct. The only difference is a negligible difference in the clock numbers, where it is off by 1.
+Testcase 13 - Our code and logic is perfectly correct. The only difference is in the clock numbers. The first one is off by 1, and the second one is off by ~20,000. Both of these are negligible, are the result of circumstances we cannot control in the timing of the system's clock. Thus, this testcase deserves full credit.
